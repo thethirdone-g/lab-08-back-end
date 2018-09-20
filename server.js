@@ -3,7 +3,15 @@
 const express = require('express');
 const superagent = require('superagent');
 const cors = require('cors');
+const postgres = require('pg');
 const app = express();
+
+// Setting up database by instantiating a new client, pointing it at our database, then connecting it to the database.
+const client = new pg.Client(process.env.DATABASE_URL);
+client.connect();
+
+// Error handling for the database
+client.on('error', err => console.error(err));
 
 // Tells express to use 'cors' for cross-origin resource sharing
 app.use(cors());
@@ -23,7 +31,65 @@ app.get('/movies', getMovies); // the movie database API
 // Tells the server to start listening to the PORT, and console.logs to tell us it's on.
 app.listen(PORT, () => console.log(`Listening on ${PORT}`));
 
+// Clear the results for a location if they are stale
+// THis is dynamic because it is able to accept a specific table and city as arguments
+function deleteByLocationId(table, city) {
+    const SQL = `DELETE from ${table} WHERE location_id=${city};`;
+    return client.query(SQL);
+}
+
 // CONSTRUCTORS BELOW //
+
+// SQL
+function Location(query, res) {
+  this.search_query = query;
+  this.formatted_query = res.body.result[0].formatted_address;
+  this.latitude = res.body.results[0].geometry.location.lat;
+  this.longitude = res.body.results[0].geometry.location.lng;
+  this.created_at = Date.now();
+}
+
+Location.lookupLocation = (location) => {
+    const SQL = `SELECT * FROM locations WHERE search_query=$1;`;
+    const values = [location.query];
+
+    // Check for this location based on the user's search query
+    return client.query(SQL, values)
+    .then(result => {
+        // Does it exist in the database? Pass the result to the .cacheHit method
+        // Remember: the result object contains an array named "rows" which contains objects, one per row from the databse. Even when there is only one.
+        if(result.rowCount > 0) {
+            location.cacheHit(result.rows[0]);
+            // If not in the database
+        } else {
+            location.cacheMiss();
+        }
+    })
+    .catch(console.error);
+}
+
+// Adding a save method so that we can save each location instance
+// Extra verification -- ON CONFLICT DO NOTHING will ensure it's really not there.
+// RETURNING id -- ensures that the id is returned from the query when we create the instance
+// Unless we specifically ask for it, an INSERT statement will not give us the id back
+Location.prototype = {
+    save: function() {
+        // $1 matches this.search_query, $2 matches this.formatted_query, $3 matches latitude, and $4 matches longitude
+        const SQL = `INSERT INTO locations (search_query, formatted_query, latitude, longitude) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id;`;
+        const values = [this.search_query, this.formatted_query, this.latitude, this.longitude];
+
+        // Now that we have the id, we can add it to the location instance 
+    // Why does this matter? We need to include the id when we send the location object to the client so that the other APIs can use it to reference the locations table
+    // For example, the weather object need to have a foreign key of location_id, and this id is the source of that value
+    return client.query(SQL, values)
+    .then(result => {
+        this.id = result.rows[0].id;
+        return this;
+    })
+    }
+}
+
+
 
 // Constructor function for Darksky API
 function WeatherResult(weather) {
@@ -68,6 +134,52 @@ function LocationResult(search, location) {
   this.latitude = location.body.results[0].geometry.location.lat;
   this.longitude = location.body.results[0].geometry.location.lng;
 }
+
+// Location helper function to check the database for location information
+function getLocation(request, response) {
+  Location.lookupLocation({
+    tableName: Location.tableName,
+
+    query : request.query.data,
+
+    // If the location exists, send it
+    cacheHit: function(result) {
+      response.send(result);
+    },
+
+    // If the location doesn't exist, request it from the API, save it in database, and send it to the client
+    cacheMiss: function() {
+      const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${this.query}&key=${process.env.GOOGLE_API_KEY}`;
+
+      return superagent.get(url)
+        .then(result => {
+          const location = new Location(this.query, result);
+          // We need a .then() becasue we want to wait for the id to be returned before sending the location object to the client
+          // If we semd the location object back before we receive the id from the database, the other APIs will not know what teh request.query.data.id is and it will not be undefined
+          location.save()
+            .then(location => response.send(location));
+        })
+        .catch(error => processError(error));
+    }
+  })
+}
+
+function singleLookup = (options) => {
+    const SQL = `SELECT * FROM ${options.tableName} WHERE location_id=$1;`;
+    const values = [location];
+
+    client.query(SQL, values)
+    .then(result => {
+        // If there is more than one record in the database, pass the array of objects as an argument to the cacheHit method
+        if(result.rowCount > 0) {
+            options.cacheHit(result.rows);
+        } else {
+            options.cacheMiss();
+        }
+    })
+    .catch(error => processError(error));
+}
+
 
 // Weather helper function
 function getWeather(request, response) {
