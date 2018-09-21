@@ -166,13 +166,13 @@ function getLocation(request, response) {
 
 function singleLookup = (options) => {
     const SQL = `SELECT * FROM ${options.tableName} WHERE location_id=$1;`;
-    const values = [location];
+    const values = [options.location];
 
     client.query(SQL, values)
     .then(result => {
         // If there is more than one record in the database, pass the array of objects as an argument to the cacheHit method
         if(result.rowCount > 0) {
-            options.cacheHit(result.rows);
+            options.cacheHit(result);
         } else {
             options.cacheMiss();
         }
