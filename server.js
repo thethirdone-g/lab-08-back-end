@@ -30,7 +30,7 @@ app.get('/location', getLocation); //google API
 app.get('/weather', getWeather); //darkskies API
 app.get('/yelp', getRestaurants); // yelp API
 app.get('/movies', getMovies); // the movie database API
-// app.get('/meetups', getMeetup); // the MeetUp API
+app.get('/meetups', getMeetup); // the MeetUp API
 app.get('/trails', getTrails); // the Hiking API
 
 // Tells the server to start listening to the PORT, and console.logs to tell us it's on.
@@ -120,6 +120,14 @@ function MovieResults(movie) {
   this.image_url = `https://image.tmdb.org/t/p/w500${movie.poster_path}`;
   this.popularity = movie.popularity;
   this.released_on = movie.release_date;
+}
+
+//Constructor function for Meetup API
+function MeetupResults(meetup) {
+  this.link = meetup.link;
+  this.name = meetup.name;
+  this.creation_date = new Date(meetup.created).toString().slice(0, 15);
+  this.host = meetup.group.name;
 }
 
 //Constructor function for Hiking API
@@ -244,13 +252,27 @@ function getMovies(request, response) {
     .catch(error => processError(error, response));
 }
 
+//Meetup helper function
+function getMeetup(request, response) {
+  const url = `https://api.meetup.com/find/upcoming_events?&sign=true&photo-host=public&lon=${request.query.data.longitude}&page=20&lat=${request.query.data.latitude}&key=${process.env.MEETUP_API_KEY}`
+  
+  return superagent.get(url)
+    .then(result => {
+      let meetupData = [];
+      meetupData = result.body.events.map(meetup => {
+        return new MeetupResults(meetup);
+      })
+      response.send(meetupData);
+    })
+    .catch(error => processError(error, response));
+}
+
 //Hiking helper function
 function getTrails(request, response) {
   const url =`https://www.hikingproject.com/data/get-trails?lat=${request.query.data.latitude}&lon=${request.query.data.longitude}&maxDistance=10&key=${process.env.HIKING_API_KEY}`
   return superagent.get(url)
     .then(result => {
       let hikingData = [];
-      // console.log('getTrails',result.body);
       hikingData = result.body.trails.map(trail => {
         return new HikingResult(trail);
       })
