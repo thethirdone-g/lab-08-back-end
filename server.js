@@ -3,8 +3,12 @@
 const express = require('express');
 const superagent = require('superagent');
 const cors = require('cors');
-const postgres = require('pg');
+const pg = require('pg');
 const app = express();
+
+// Allows us to use the .env file
+require('dotenv').config();
+console.log('test');
 
 // Setting up database by instantiating a new client, pointing it at our database, then connecting it to the database.
 const client = new pg.Client(process.env.DATABASE_URL);
@@ -16,8 +20,7 @@ client.on('error', err => console.error(err));
 // Tells express to use 'cors' for cross-origin resource sharing
 app.use(cors());
 
-// Allows us to use the .env file
-require('dotenv').config();
+
 
 // assigns the PORT variable to equal the port declared in the .env file for our local server.  It also allows heroku to assign it's own port number.
 const PORT = process.env.PORT;
@@ -27,6 +30,8 @@ app.get('/location', getLocation); //google API
 app.get('/weather', getWeather); //darkskies API
 app.get('/yelp', getRestaurants); // yelp API
 app.get('/movies', getMovies); // the movie database API
+app.get('/meetups', getMeetup); // the MeetUp API
+app.get('/trails', getTrails); // the Hiking API
 
 // Tells the server to start listening to the PORT, and console.logs to tell us it's on.
 app.listen(PORT, () => console.log(`Listening on ${PORT}`));
@@ -34,8 +39,8 @@ app.listen(PORT, () => console.log(`Listening on ${PORT}`));
 // Clear the results for a location if they are stale
 // THis is dynamic because it is able to accept a specific table and city as arguments
 function deleteByLocationId(table, city) {
-    const SQL = `DELETE from ${table} WHERE location_id=${city};`;
-    return client.query(SQL);
+  const SQL = `DELETE from ${table} WHERE location_id=${city};`;
+  return client.query(SQL);
 }
 
 // CONSTRUCTORS BELOW //
@@ -43,27 +48,27 @@ function deleteByLocationId(table, city) {
 // SQL
 function Location(query, res) {
   this.search_query = query;
-  this.formatted_query = res.body.result[0].formatted_address;
+  this.formatted_query = res.body.results[0].formatted_address;
   this.latitude = res.body.results[0].geometry.location.lat;
   this.longitude = res.body.results[0].geometry.location.lng;
   this.created_at = Date.now();
 }
 
 Location.lookupLocation = (location) => {
-    const SQL = `SELECT * FROM locations WHERE search_query=$1;`;
-    const values = [location.query];
+  const SQL = `SELECT * FROM locations WHERE search_query=$1;`;
+  const values = [location.query];
 
-    // Check for this location based on the user's search query
-    return client.query(SQL, values)
+  // Check for this location based on the user's search query
+  return client.query(SQL, values)
     .then(result => {
-        // Does it exist in the database? Pass the result to the .cacheHit method
-        // Remember: the result object contains an array named "rows" which contains objects, one per row from the databse. Even when there is only one.
-        if(result.rowCount > 0) {
-            location.cacheHit(result.rows[0]);
-            // If not in the database
-        } else {
-            location.cacheMiss();
-        }
+      // Does it exist in the database? Pass the result to the .cacheHit method
+      // Remember: the result object contains an array named "rows" which contains objects, one per row from the databse. Even when there is only one.
+      if(result.rowCount > 0) {
+        location.cacheHit(result.rows[0]);
+        // If not in the database
+      } else {
+        location.cacheMiss();
+      }
     })
     .catch(console.error);
 }
@@ -73,20 +78,20 @@ Location.lookupLocation = (location) => {
 // RETURNING id -- ensures that the id is returned from the query when we create the instance
 // Unless we specifically ask for it, an INSERT statement will not give us the id back
 Location.prototype = {
-    save: function() {
-        // $1 matches this.search_query, $2 matches this.formatted_query, $3 matches latitude, and $4 matches longitude
-        const SQL = `INSERT INTO locations (search_query, formatted_query, latitude, longitude) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id;`;
-        const values = [this.search_query, this.formatted_query, this.latitude, this.longitude];
+  save: function() {
+    // $1 matches this.search_query, $2 matches this.formatted_query, $3 matches latitude, and $4 matches longitude
+    const SQL = `INSERT INTO locations (search_query, formatted_query, latitude, longitude) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id;`;
+    const values = [this.search_query, this.formatted_query, this.latitude, this.longitude];
 
-        // Now that we have the id, we can add it to the location instance 
+    // Now that we have the id, we can add it to the location instance
     // Why does this matter? We need to include the id when we send the location object to the client so that the other APIs can use it to reference the locations table
     // For example, the weather object need to have a foreign key of location_id, and this id is the source of that value
     return client.query(SQL, values)
-    .then(result => {
+      .then(result => {
         this.id = result.rows[0].id;
         return this;
-    })
-    }
+      })
+  }
 }
 
 
@@ -115,6 +120,28 @@ function MovieResults(movie) {
   this.image_url = `https://image.tmdb.org/t/p/w500${movie.poster_path}`;
   this.popularity = movie.popularity;
   this.released_on = movie.release_date;
+}
+
+//Constructor function for Meetup API
+function MeetupResults(meetup) {
+  this.link = meetup.link;
+  this.name = meetup.name;
+  this.creation_date = new Date(meetup.created).toString().slice(0, 15);
+  this.host = meetup.group.name;
+}
+
+//Constructor function for Hiking API
+function HikingResult(hike) {
+  this.name = hike.name;
+  this.location = hike.location;
+  this.length = hike.length;
+  this.stars = hike.stars;
+  this.star_votes = hike.star_votes;
+  this.summary = hike.summary;
+  this.trail_url = hike.trail_url;
+  this.conditions = hike.conditions;
+  this.condition_date = hike.condition_date;
+  this.condition_time = hike.condition_time;
 }
 
 // Google helper function refactored prior to lab start.
@@ -164,18 +191,18 @@ function getLocation(request, response) {
   })
 }
 
-function singleLookup = (options) => {
-    const SQL = `SELECT * FROM ${options.tableName} WHERE location_id=$1;`;
-    const values = [options.location];
+function singleLookup(options) {
+  const SQL = `SELECT * FROM ${options.tableName} WHERE location_id=$1;`;
+  const values = [options.location];
 
-    client.query(SQL, values)
+  client.query(SQL, values)
     .then(result => {
-        // If there is more than one record in the database, pass the array of objects as an argument to the cacheHit method
-        if(result.rowCount > 0) {
-            options.cacheHit(result);
-        } else {
-            options.cacheMiss();
-        }
+      // If there is more than one record in the database, pass the array of objects as an argument to the cacheHit method
+      if(result.rowCount > 0) {
+        options.cacheHit(result);
+      } else {
+        options.cacheMiss();
+      }
     })
     .catch(error => processError(error));
 }
@@ -224,6 +251,36 @@ function getMovies(request, response) {
     })
     .catch(error => processError(error, response));
 }
+
+//Meetup helper function
+function getMeetup(request, response) {
+  const url = `https://api.meetup.com/find/upcoming_events?&sign=true&photo-host=public&lon=${request.query.data.longitude}&page=20&lat=${request.query.data.latitude}&key=${process.env.MEETUP_API_KEY}`
+  
+  return superagent.get(url)
+    .then(result => {
+      let meetupData = [];
+      meetupData = result.body.events.map(meetup => {
+        return new MeetupResults(meetup);
+      })
+      response.send(meetupData);
+    })
+    .catch(error => processError(error, response));
+}
+
+//Hiking helper function
+function getTrails(request, response) {
+  const url =`https://www.hikingproject.com/data/get-trails?lat=${request.query.data.latitude}&lon=${request.query.data.longitude}&maxDistance=10&key=${process.env.HIKING_API_KEY}`
+  return superagent.get(url)
+    .then(result => {
+      let hikingData = [];
+      hikingData = result.body.trails.map(trail => {
+        return new HikingResult(trail);
+      })
+      response.send(hikingData);
+    })
+    .catch(error => processError(error, response));
+}
+
 
 // Error handeling helper function
 function processError(err, res) {
